@@ -1,14 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-DreamLover — Mod Menu IP Checker (IPv4 + IP info)
-- Génère uniquement des adresses IPv4 dans des plages réservées / privées / link-local / loopback.
-- Préfixe "[+]" devant chaque IP.
-- Nouvelle option: IP info -> entre une IP IPv4 et le script tente de géolocaliser (pays, ville, lat/lon)
-  puis ouvre une carte (Leaflet) avec un point rouge.
-- Dossier de sortie carte HTML : ~/dreamlover_maps
-"""
-
 import time
 import random
 import sys
